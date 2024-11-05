@@ -11,7 +11,7 @@ import os
 import torch.distributed as dist
 from torch.cuda import amp
 import torchio as tio
-
+import torch.nn.functional as F
 
 class Trainer_basic(object):
     def __init__(self, args, logger):
@@ -27,12 +27,13 @@ class Trainer_basic(object):
             self.sam = build_model(args)
         if self.args.ddp:
             self.sam = self.sam.module
-            
+        
         # Initialize Teacher Model only if distillation is enabled
         if self.args.use_distillation:
             self.teacher_model = build_model(args, checkpoint=args.checkpoint_distiller)
             self.teacher_model.eval().to(self.args.device)  # Teacher model in evaluation mode
-
+        
+        # Initialize Best Metrics, Pooling Layer, and Boundary Loss Parameters
         self.best_dice, self.best_epoch, self.start_epoch = 0, 0, 0
         self.pooling_layer = nn.AvgPool3d((self.args.boundary_kernel_size, self.args.boundary_kernel_size, 1), stride=1,
                                      padding=(int((self.args.boundary_kernel_size - 1) / 2),
@@ -67,6 +68,22 @@ class Trainer_basic(object):
     def forward(self, model, image, label, iter_nums, train, return_each_iter):
         pass
 
+    def distillation_loss(self, student_logits, teacher_logits, boundary_loss_weight=0.5, temperature=2.0):
+        # KL Divergence Loss with Temperature Scaling
+        kl_loss = F.kl_div(
+            F.log_softmax(student_logits / temperature, dim=1),
+            F.softmax(teacher_logits / temperature, dim=1),
+            reduction='batchmean'
+        ) * (temperature ** 2)
+        
+        # Boundary Loss
+        student_boundary = torch.abs(student_logits - self.pooling_layer(student_logits))
+        teacher_boundary = torch.abs(teacher_logits - self.pooling_layer(teacher_logits))
+        boundary_loss = torch.mean(torch.abs(student_boundary - teacher_boundary))
+        
+        # Combined Loss
+        return kl_loss #+ boundary_loss_weight * boundary_loss
+
     def train(self, epoch_num):
         loss_summary = []
         for idx, (image, label, image_path) in enumerate(self.train_data):
@@ -77,11 +94,23 @@ class Trainer_basic(object):
             # with my_context():
             image, label = image.to(self.args.device), label.to(self.args.device)
             with amp.autocast():
-                loss, _ = self.forward(self.sam, image, label, iter_nums=self.args.iter_nums, train=True)
+                # Forward pass for Student
+                segm_loss, student_logits = self.forward(self.sam, image, label, iter_nums=self.args.iter_nums, train=True)
 
-            loss_summary.append(loss.detach().cpu().numpy())
+                # If distillation is enabled, calculate distillation loss with Teacher model
+                if self.args.use_distillation:
+                    with torch.no_grad():
+                        _, teacher_logits = self.forward(self.teacher_model, image, label, iter_nums=self.args.iter_nums, train=False)
+                    distill_loss = self.distillation_loss(student_logits, teacher_logits)
+                    alpha_distill = 0.25
+                    total_loss = segm_loss + alpha_distill * distill_loss
+                else:
+                    total_loss = segm_loss
 
-            self.scaler.scale(loss).backward()
+                loss_summary.append(total_loss.detach().cpu().numpy())
+
+            # Backpropagation
+            self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.sam.parameters(), 1.0)
             self.scaler.step(self.optimizer)

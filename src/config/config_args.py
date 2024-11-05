@@ -55,7 +55,9 @@ parser.add_argument('--dynamic', action="store_true")
 parser.add_argument('--efficient_scribble', action="store_true")
 parser.add_argument("--use_sam3d_turbo", action="store_true")
 
-
+parser.add_argument("--use_distillation", action="store_true")
+parser.add_argument("--checkpoint_distiller", default="./implementation/colon/prism_ultra_plus_colon/best.pth.tar", type=str,
+                    help='path of pretrained teacher model')
 
 # saving
 parser.add_argument("--save_predictions", action="store_true")

@@ -9,7 +9,7 @@ from .trainer_basic import Trainer_basic
 class Trainer(Trainer_basic):
     def __init__(self, args, logger):
         super().__init__(args, logger)
-
+        
     def forward(self, sam_model, image, label, iter_nums, train=False, return_each_iter=False):
         if return_each_iter:
             return_mask_total_iter = torch.zeros([iter_nums, 1, image.size(2), image.size(3), image.size(4)])
@@ -23,9 +23,37 @@ class Trainer(Trainer_basic):
             loss = 0
             prev_masks_sigmoid = torch.sigmoid(prev_masks) if iter_num > 0 else prev_masks
 
+            # Get prompts for teacher and student models
             points_input, labels_input, box_input = self.get_points(prev_masks_sigmoid, label, train_mode=train)
+            
+            #default student
+            student_points = points_input
+            student_labels = labels_input
+            student_box = box_input
+            
+            if self.args.use_distillation:
+                # Forward pass for teacher model
+                with torch.no_grad():
+                    teacher_mask, _ = self.iteration_forward(self.teacher_model, feature_list, image_embedding, prev_masks,
+                                                             points=[points_input, labels_input], boxes=box_input)
+                # Perform refinement on teacher's mask
+                if self.args.refine:
+                    if self.args.no_detach:
+                        teacher_mask, _ = self.teacher_model.mask_decoder.refine(
+                            image, teacher_mask, [self.click_points, self.click_labels], teacher_mask
+                        )
+                else:
+                    teacher_mask, _ = self.teacher_model.mask_decoder.refine(
+                        image, teacher_mask, [self.click_points, self.click_labels], teacher_mask.detach()
+                    )
+                    
+                #Student prompt selection    
+                student_box = None
+                student_points, student_labels = self.select_random_points(points_input, labels_input, num_points = 1)
+                
+            # Forward pass for student model
             mask, dice_pred = self.iteration_forward(sam_model, feature_list, image_embedding, prev_masks,
-                                                     points=[points_input, labels_input], boxes=box_input)
+                                                    points=[student_points, student_labels], boxes=student_box)
 
             # ========================================================
             if self.args.multiple_outputs:
@@ -40,9 +68,15 @@ class Trainer(Trainer_basic):
                 if self.args.multiple_outputs:
                     for i in range(mask.size(1)):
                         single_mask, single_dice = mask[:, i, :].unsqueeze(1), dice_pred[:, i]
-                        loss += self.calculate_loss(single_mask, prev_masks, single_dice, label, labels_input, iter_num)
+                        loss += self.calculate_loss(single_mask, prev_masks, single_dice, label, student_labels, iter_num)
                 else:
-                    loss = self.calculate_loss(mask, prev_masks, dice_pred[:, 0], label, labels_input, iter_num)
+                    loss = self.calculate_loss(mask, prev_masks, dice_pred[:, 0], label, student_labels, iter_num)
+
+                # ========================================================
+                # Calculate distillation loss
+                if self.args.use_distillation:
+                    distill_loss = self.calculate_distillation_loss(mask_best, teacher_mask)
+                    loss += distill_loss
 
                 # ========================================================
                 if self.args.refine:
@@ -75,7 +109,7 @@ class Trainer(Trainer_basic):
                     if iter_num == iter_nums - 1 or iter_num == 0:
                         self.logger.info('dice before refine {} and after {}, label 0: {}, label 1: {}'.format(
                             self.get_dice_score(torch.sigmoid(mask_best), label), self.get_dice_score(torch.sigmoid(mask_refine), label),
-                            str(labels_input.numel() - torch.count_nonzero(labels_input)), str(torch.count_nonzero(labels_input)) ) )
+                            str(student_labels.numel() - torch.count_nonzero(student_labels)), str(torch.count_nonzero(student_labels)) ) )
                     mask_best = mask_refine
                 loss = self.get_dice_score(torch.sigmoid(mask_best), label)
 
@@ -89,6 +123,37 @@ class Trainer(Trainer_basic):
             return return_loss / iter_nums, return_mask_total_iter
         else:
             return return_loss / iter_nums, prev_masks
+
+    def select_random_points(self, points, labels, num_points=5):
+        """Selects a specified number of random points from the teacher's points."""
+        batch_size, num_total_points, num_coords = points.size()
+        num_points = min(num_points, num_total_points)
+        
+        # Randomly select indices for the required number of points for each batch item
+        random_indices = torch.randint(0, num_total_points, (batch_size, num_points), device=points.device)
+        
+        # Gather the selected random points from the points tensor
+        random_points = torch.gather(points, 1, random_indices.unsqueeze(-1).expand(-1, -1, num_coords))
+        random_labels = torch.gather(labels, 1, random_indices)
+        
+        return random_points, random_labels  # Shape: [batch_size, num_points, num_coords]
+
+
+    def calculate_distillation_loss(self, student_mask, teacher_mask, boundary_loss_weight=0.5, temperature=2.0):
+        # KL Divergence Loss with Temperature Scaling
+        kl_loss = F.kl_div(
+            F.log_softmax(student_mask / temperature, dim=1),
+            F.softmax(teacher_mask / temperature, dim=1),
+            reduction='batchmean'
+        ) * (temperature ** 2)
+        
+        # Boundary Loss using AvgPool3D on student and teacher masks
+        student_boundary = torch.abs(student_mask - self.pooling_layer(student_mask))
+        teacher_boundary = torch.abs(teacher_mask - self.pooling_layer(teacher_mask))
+        boundary_loss = torch.mean(torch.abs(student_boundary - teacher_boundary))
+        
+        # Combined Loss
+        return kl_loss #+ boundary_loss_weight * boundary_loss
 
     def get_points(self, prev_masks, label, train_mode=True):
         mode = 'train' if train_mode else 'validation'
