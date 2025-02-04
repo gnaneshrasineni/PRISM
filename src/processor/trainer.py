@@ -2,8 +2,8 @@ import torch
 import torch.nn.functional as F
 import random
 import numpy as np
-from src.utils.util import _bbox_mask
-from src.utils import scribble, boundary_selection
+from utils.util import _bbox_mask
+from utils import scribble, boundary_selection
 from .trainer_basic import Trainer_basic
 
 class Trainer(Trainer_basic):
@@ -14,7 +14,11 @@ class Trainer(Trainer_basic):
         if return_each_iter:
             return_mask_total_iter = torch.zeros([iter_nums, 1, image.size(2), image.size(3), image.size(4)])
 
-        image_embedding, feature_list = self.sam.image_encoder(image)
+        image_embedding, feature_list = self.sam.image_encoder(image) # student image embedding in distillation setting
+        teacher_image_embedding, teacher_feature_list = None, None
+        if self.args.use_distillation:
+            with torch.no_grad():
+                teacher_image_embedding, teacher_feature_list = self.teacher_model.image_encoder(image)
         self.click_points = []
         self.click_labels = []
         return_loss = 0
@@ -34,7 +38,7 @@ class Trainer(Trainer_basic):
             if self.args.use_distillation:
                 # Forward pass for teacher model
                 with torch.no_grad():
-                    teacher_mask, _ = self.iteration_forward(self.teacher_model, feature_list, image_embedding, prev_masks,
+                    teacher_mask, _ = self.iteration_forward(self.teacher_model, teacher_feature_list, teacher_image_embedding, prev_masks,
                                                              points=[points_input, labels_input], boxes=box_input)
                 # Perform refinement on teacher's mask
                 if self.args.refine:
@@ -75,8 +79,10 @@ class Trainer(Trainer_basic):
                 # ========================================================
                 # Calculate distillation loss
                 if self.args.use_distillation:
+                    alpha = 0.1
                     distill_loss = self.calculate_distillation_loss(mask_best, teacher_mask)
-                    loss += distill_loss
+                    print('Distillation Loss - {}'.format(distill_loss))
+                    loss += alpha * distill_loss
 
                 # ========================================================
                 if self.args.refine:
