@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import surface_distance
 from surface_distance import metrics
-from src.utils.util import save_predict, save_csv
+from utils.util import save_predict, save_csv
 
 
 

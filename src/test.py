@@ -5,11 +5,11 @@ from utils.util import setup_logger
 from config.config_args import *
 import numpy as np
 from torch.backends import cudnn
-from src.config.config_setup import build_model, get_dataloader
+from config.config_setup import build_model, get_dataloader
 import time, random
 import torch.nn.functional as F
-from src.utils.util import _bbox_mask
-from src.utils import scribble, boundary_selection
+from utils.util import _bbox_mask
+from utils import scribble, boundary_selection
 import torchio as tio
 import surface_distance
 from surface_distance import metrics

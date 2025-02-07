@@ -8,15 +8,15 @@
 #SBATCH --mem=50G
 #SBATCH --account=soc-gpu-np
 #SBATCH --partition=soc-gpu-np
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --mail-user=rasinenignanesh@gmail.com
 
-conda activate /scratch/general/vast/u1470943/envs/prism
+conda activate /scratch/general/vast/u1470943/Research/envs/prism
 
 module load cuda/12.1.0
 module load cudnn/8.9.7.29-12-gpu
 
 set +x
-/scratch/general/vast/u1470943/envs/prism/bin/python train.py --data colon --data_dir /scratch/general/vast/u1470943/Research/data/datasets/Task10_colon --save_name prism_points_bb --multiple_outputs --dynamic --use_box --refine
+/scratch/general/vast/u1470943/Research/envs/prism/bin/python train.py --data colon --data_dir /scratch/general/vast/u1470943/Research/data/datasets/Task10_colon --save_name prism_points_bb --multiple_outputs --dynamic --use_box --refine
 
 

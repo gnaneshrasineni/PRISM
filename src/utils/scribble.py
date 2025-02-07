@@ -5,8 +5,8 @@ import torch
 
 import kornia
 import cv2
-import src.voxynth.noise as v_noise
-import src.voxynth.transform as v_transform
+import voxynth.noise as v_noise
+import voxynth.transform as v_transform
 
 import os
 

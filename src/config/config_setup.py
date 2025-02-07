@@ -1,5 +1,5 @@
-from src.models.build_sam3D import sam_model_registry3D
-from src.dataset.dataloader import Dataset_promise, Dataloader_promise
+from models.build_sam3D import sam_model_registry3D
+from dataset.dataloader import Dataset_promise, Dataloader_promise
 import torchio as tio
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler

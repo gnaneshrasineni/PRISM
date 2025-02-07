@@ -2,10 +2,10 @@ from abc import abstractmethod
 import torch
 import numpy as np
 from torch.optim import AdamW, lr_scheduler
-from src.config.config_setup import build_model, get_dataloader
+from config.config_setup import build_model, get_dataloader
 from monai.losses import DiceCELoss, DiceLoss
 import torch.nn as nn
-from src.utils.util import save_checkpoint
+from utils.util import save_checkpoint
 import time
 import os
 import torch.distributed as dist
