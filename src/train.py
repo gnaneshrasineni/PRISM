@@ -1,7 +1,7 @@
 import logging
 from utils.util import setup_logger
 from config.config_args import *
-from processor.trainer import Trainer
+from processor.trainer_feature_kd import Trainer
 import torch.multiprocessing as mp
 import torch
 import torch.distributed as dist
