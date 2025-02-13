@@ -91,7 +91,7 @@ def batch_forward(args, sam_model, image_embedding, gt3D, low_res_masks, points=
         boxes=None,
         masks=low_res_masks,
     )
-    low_res_masks, iou_predictions = sam_model.mask_decoder(
+    low_res_masks, iou_predictions, _ = sam_model.mask_decoder(
         image_embeddings=image_embedding.to(args.device),  # (B, 256, 64, 64)
         image_pe=sam_model.prompt_encoder.get_dense_pe(),  # (1, 256, 64, 64)
         sparse_prompt_embeddings=sparse_embeddings,  # (B, 2, 256)

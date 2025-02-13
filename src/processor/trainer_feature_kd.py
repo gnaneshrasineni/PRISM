@@ -5,6 +5,7 @@ import numpy as np
 from utils.util import _bbox_mask
 from utils import scribble, boundary_selection
 from .trainer_basic import Trainer_basic
+from utils.rkd import RKDLoss
 
 class Trainer(Trainer_basic):
     def __init__(self, args, logger):
@@ -35,7 +36,7 @@ class Trainer(Trainer_basic):
             if self.args.use_distillation:
                 # Forward pass for teacher model
                 with torch.no_grad():
-                    teacher_mask, _, teacher_image_embedding, teacher_point_embedding = self.iteration_forward(self.teacher_model, feature_list, image_embedding, prev_masks,
+                    teacher_mask, _, teacher_image_embedding, teacher_point_embedding, teacher_decoder_embedding = self.iteration_forward(self.teacher_model, feature_list, image_embedding, prev_masks,
                                                              points=[points_input, labels_input], boxes=box_input)
                 # Perform refinement on teacher's mask
                 if self.args.refine:
@@ -49,11 +50,11 @@ class Trainer(Trainer_basic):
                     )
                     
                 #Student prompt selection    
-                student_box = None
-                student_points, student_labels = self.select_random_points(points_input, labels_input, num_points = 1)
+                student_box = box_input
+                student_points, student_labels = self.select_random_points(points_input, labels_input, num_points=50)
                 
             # Forward pass for student model
-            mask, dice_pred, student_image_embedding, student_point_embedding = self.iteration_forward(sam_model, feature_list, image_embedding, prev_masks,
+            mask, dice_pred, student_image_embedding, student_point_embedding, student_decoder_embedding = self.iteration_forward(sam_model, feature_list, image_embedding, prev_masks,
                                                     points=[student_points, student_labels], boxes=student_box)
 
             # ========================================================
@@ -76,13 +77,19 @@ class Trainer(Trainer_basic):
                 # ========================================================
                 # Calculate distillation loss
                 if self.args.use_distillation:
-                    alpha = 0.1
-                    beta = 0.25
-                    distill_loss = self.calculate_distillation_loss(mask_best, teacher_mask)
-                    prompt_enc_distill_loss = F.mse_loss(student_point_embedding, teacher_point_embedding) + \
-                                         F.mse_loss(student_image_embedding, teacher_image_embedding)
-                    print('Distillation Loss - {}'.format(distill_loss))
-                    loss += alpha * distill_loss + beta * prompt_enc_distill_loss
+                    relational_kd_loss = RKDLoss()
+                    sparse_prompt_rel_kd_loss = relational_kd_loss(student_point_embedding, teacher_point_embedding)
+
+                    dense_prompt_kl_loss, dense_prompt_mse_loss = self.calculate_feature_distill_loss(student_image_embedding, teacher_image_embedding)
+                    decoder_kl_loss, decoder_mse_loss = self.calculate_feature_distill_loss(student_decoder_embedding, teacher_decoder_embedding)
+                    alpha = 0.7
+                    combined_feature_kd_loss = alpha * (dense_prompt_kl_loss + decoder_kl_loss) / 2 + \
+                                    (1-alpha) * (dense_prompt_mse_loss + decoder_mse_loss) / 2
+
+                    beta = 0.5
+                    combined_loss = beta * sparse_prompt_rel_kd_loss + (1 - beta) * combined_feature_kd_loss
+                    print('Distillation Loss - {}'.format(combined_loss))
+                    loss += combined_loss
 
                 # ========================================================
                 if self.args.refine:
@@ -145,21 +152,22 @@ class Trainer(Trainer_basic):
         return random_points, random_labels  # Shape: [batch_size, num_points, num_coords]
 
 
-    def calculate_distillation_loss(self, student_mask, teacher_mask, boundary_loss_weight=0.5, temperature=2.0):
-        # KL Divergence Loss with Temperature Scaling
-        kl_loss = F.kl_div(
-            F.log_softmax(student_mask / temperature, dim=1),
-            F.softmax(teacher_mask / temperature, dim=1),
-            reduction='batchmean'
-        ) * (temperature ** 2)
-        
-        # Boundary Loss using AvgPool3D on student and teacher masks
-        student_boundary = torch.abs(student_mask - self.pooling_layer(student_mask))
-        teacher_boundary = torch.abs(teacher_mask - self.pooling_layer(teacher_mask))
-        boundary_loss = torch.mean(torch.abs(student_boundary - teacher_boundary))
-        
-        # Combined Loss
-        return kl_loss #+ boundary_loss_weight * boundary_loss
+    def calculate_feature_distill_loss(self, student_embeddings, teacher_embeddings, temperature=1.0):
+        # Ensure embeddings are normalized (important for numerical stability)
+        student_embeddings = F.normalize(student_embeddings, p=2, dim=-1) #L2 norm
+        teacher_embeddings = F.normalize(teacher_embeddings, p=2, dim=-1)
+
+        # Softmax with temperature
+        student_probs = F.log_softmax(student_embeddings / temperature, dim=-1)  # Log probabilities for numerical stability
+        teacher_probs = F.softmax(teacher_embeddings / temperature, dim=-1)
+
+        # KL Divergence Calculation
+        kl_loss = F.kl_div(student_probs, teacher_probs, log_target=False, reduction='batchmean')  # Using batchmean for average over batch
+
+        #MSE Loss Calculation
+        mse_loss = F.mse_loss(student_embeddings, teacher_embeddings)
+
+        return kl_loss, mse_loss
 
     def get_points(self, prev_masks, label, train_mode=True):
         mode = 'train' if train_mode else 'validation'
@@ -317,12 +325,12 @@ class Trainer(Trainer_basic):
             image_embeddings=image_embedding.to(self.args.device)
         )
 
-        mask, dice_pred = sam_model.mask_decoder(
+        mask, dice_pred, decoder_embedding = sam_model.mask_decoder(
             prompt_embeddings=new_point_embedding,  # (B, 2, 256)
             image_embeddings=new_image_embedding,  # (B, 256, 64, 64)
             feature_list=features,
         )
-        return mask, dice_pred, new_image_embedding, new_point_embedding
+        return mask, dice_pred, new_image_embedding, new_point_embedding, decoder_embedding
 
 
 

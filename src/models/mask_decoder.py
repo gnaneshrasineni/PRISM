@@ -54,7 +54,7 @@ class MaskDecoder3D(nn.Module):
 
         upscaled_embedding = self.decoder(image_embeddings, feature_list)
         masks, iou_pred = self._predict_mask(upscaled_embedding, prompt_embeddings)
-        return masks, iou_pred
+        return masks, iou_pred, upscaled_embedding
 
 
     def _predict_mask(self, upscaled_embedding, prompt_embeddings):

@@ -317,7 +317,7 @@ class Trainer(Trainer_basic):
             image_embeddings=image_embedding.to(self.args.device)
         )
 
-        mask, dice_pred = sam_model.mask_decoder(
+        mask, dice_pred, _ = sam_model.mask_decoder(
             prompt_embeddings=new_point_embedding,  # (B, 2, 256)
             image_embeddings=new_image_embedding,  # (B, 256, 64, 64)
             feature_list=features,
